@@ -181,6 +181,26 @@ def _require_layers(dataset: xr.Dataset, names: set[str]) -> None:
         raise HTTPException(status_code=503, detail=f"Product is missing required layers: {sorted(missing)}")
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "version": "1.0.0"}
+
+
+@app.get("/api/v1/products")
+def get_products() -> dict[str, dict[str, Any]]:
+    products: dict[str, dict[str, Any]] = {}
+    for scenario, period in [("current", "current"), ("ssp245", "2030"), ("ssp245", "2050"), ("ssp245", "2080"), ("ssp585", "2030"), ("ssp585", "2050"), ("ssp585", "2080")]:
+        key = "current" if (scenario == "current" and period == "current") else f"{scenario}_{period}"
+        path = _product_path(scenario, period)
+        products[key] = {
+            "scenario": scenario,
+            "period": period,
+            "available": path.is_file(),
+            "path": str(path),
+        }
+    return {"products": products}
+
+
 @app.get("/api/v1/maps/{scenario}/{period}", response_model=MapResponse)
 def get_map(
     scenario: str,

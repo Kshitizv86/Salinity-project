@@ -1,5 +1,7 @@
 import xarray as xr
 
+from .validation import validate_and_convert_units
+
 
 def monthly_delta_correction(
     future: xr.Dataset,
@@ -27,16 +29,27 @@ def monthly_delta_correction(
                 raise ValueError(f"{label} dataset is missing feature {feature_name!r}")
 
         future_variable = future[feature_name]
-        historical_monthly = historical[feature_name].groupby("time.month").mean("time")
-        observed_monthly = observed[feature_name].groupby("time.month").mean("time")
+        historical_variable = historical[feature_name]
+        observed_variable = observed[feature_name]
+        future_unit_checked = validate_and_convert_units(future_variable, variable_id)
+        historical_unit_checked = validate_and_convert_units(historical_variable, variable_id)
+        observed_unit_checked = validate_and_convert_units(observed_variable, variable_id)
+        historical_monthly = historical_unit_checked.groupby("time.month").mean("time")
+        observed_monthly = observed_unit_checked.groupby("time.month").mean("time")
+        future_original_units = future_variable.attrs.get("units")
         if variable_id == "pr":
             ratio = observed_monthly / historical_monthly.where(historical_monthly > 1e-6)
-            adjusted = (future_variable.groupby("time.month") * ratio).clip(min=0)
+            adjusted = (future_unit_checked.groupby("time.month") * ratio).clip(min=0)
+            if future_original_units is not None and "mm" in future_original_units.lower():
+                adjusted = adjusted * 86400.0
         else:
             delta = observed_monthly - historical_monthly
-            adjusted = future_variable.groupby("time.month") + delta
+            adjusted = future_unit_checked.groupby("time.month") + delta
+            if future_original_units is not None and "degc" in future_original_units.lower().replace(" ", ""):
+                adjusted = adjusted - 273.15
         corrected[feature_name] = adjusted.transpose(*future_variable.dims)
         corrected[feature_name].attrs.update(future_variable.attrs)
+        corrected[feature_name].attrs["units"] = future_original_units or corrected[feature_name].attrs.get("units")
         corrected[feature_name].attrs["bias_correction"] = (
             "monthly multiplicative delta" if variable_id == "pr" else "monthly additive delta"
         )

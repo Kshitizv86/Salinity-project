@@ -1,7 +1,13 @@
 import json
+import re
 
 import numpy as np
 import xarray as xr
+
+
+def _shift_name(feature_name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_]+", "_", feature_name).strip("_").lower()
+    return f"shift_{sanitized}"
 
 
 def assess_applicability(
@@ -47,9 +53,13 @@ def assess_applicability(
     ]
     stacked = xr.concat(standardized, dim=xr.IndexVariable("feature", feature_names))
     shift_score = np.abs(stacked).max("feature", skipna=False).rename("covariate_shift_score")
+    feature_diagnostics = {}
+    for name, mean, scale in zip(feature_names, means, scales):
+        feature_shift = np.abs((future[name] - float(mean)) / float(scale)).rename(_shift_name(name))
+        feature_diagnostics[_shift_name(name)] = feature_shift
     mask = (shift_score <= cutoff).astype("uint8").rename("applicability_mask")
     rng = np.random.default_rng(random_seed)
-    applicable_replicates = np.zeros(shift_score.shape, dtype=np.uint16)
+    applicable_replicates = np.zeros(shift_score.shape, dtype=np.float64)
     future_values = [np.asarray(future[name].values, dtype=float) for name in feature_names]
     for _ in range(bootstrap_replicates):
         sample = complete_training[rng.integers(0, complete_training.shape[0], complete_training.shape[0])]
@@ -78,12 +88,16 @@ def assess_applicability(
         "applicability_mask": mask,
         "applicability_probability": probability_da,
         "applicability_uncertainty": uncertainty_da,
+        **feature_diagnostics,
     })
+    fraction = float(mask.mean().item())
     result.attrs.update({
         "method": "maximum absolute standardized feature distance",
         "threshold_percentile": threshold_percentile,
         "threshold": cutoff,
         "feature_names": json.dumps(feature_names),
+        "applicability_fraction": fraction,
+        "applicability_percentage": fraction * 100.0,
         "applicability_uncertainty_method": (
             "Bernoulli standard deviation of bootstrap applicability classifications"
         ),
