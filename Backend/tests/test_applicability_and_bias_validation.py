@@ -1,8 +1,9 @@
 import numpy as np
 import xarray as xr
 
-from src.projection.applicability import assess_applicability
-from src.projection.bias_correction import monthly_delta_correction
+from Backend.src.projection.applicability import assess_applicability
+from Backend.src.projection.bias_correction import monthly_delta_correction
+from Backend.src.projection.validation import validate_and_convert_units
 
 
 def test_assess_applicability_outputs_feature_diagnostics_and_probability_bounds():
@@ -68,3 +69,17 @@ def test_monthly_delta_correction_rejects_mismatched_units():
         assert "units" in str(exc).lower()
     else:
         raise AssertionError("monthly_delta_correction should reject mismatched units")
+
+
+def test_climate_units_convert_to_project_canonical_schema():
+    precipitation = validate_and_convert_units(
+        xr.DataArray([1.0 / 86400.0], attrs={"units": "kg m-2 s-1"}), "pr"
+    )
+    temperature = validate_and_convert_units(
+        xr.DataArray([273.15], attrs={"units": "K"}), "tas"
+    )
+
+    assert np.allclose(precipitation.values, [1.0])
+    assert precipitation.attrs["units"] == "mm/day"
+    assert np.allclose(temperature.values, [0.0])
+    assert temperature.attrs["units"] == "degC"

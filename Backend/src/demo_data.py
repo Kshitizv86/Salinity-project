@@ -15,10 +15,14 @@ import xarray as xr
 if __package__:
     from .projection.applicability import assess_applicability
     from .projection.bias_correction import monthly_delta_correction
+    from .projection.feature_assembly import assemble_model_features
+    from .projection.regrid import regrid_to_target_grid
     from .uncertainty.quantify import quantify_prediction_uncertainty
 else:
     from projection.applicability import assess_applicability
     from projection.bias_correction import monthly_delta_correction
+    from projection.feature_assembly import assemble_model_features
+    from projection.regrid import regrid_to_target_grid
     from uncertainty.quantify import quantify_prediction_uncertainty
 
 
@@ -27,7 +31,9 @@ FEATURE_MAP = {
     "mean_temperature_c": "tas",
     "maximum_temperature_c": "tasmax",
 }
-FEATURE_NAMES = list(FEATURE_MAP)
+CLIMATE_FEATURE_NAMES = list(FEATURE_MAP)
+STATIC_FEATURE_NAMES = ["elevation_m"]
+FEATURE_NAMES = CLIMATE_FEATURE_NAMES + STATIC_FEATURE_NAMES
 SCENARIO_WARMING = {
     "ssp245": {"2030": 0.6, "2050": 1.1, "2080": 1.8},
     "ssp585": {"2030": 0.9, "2050": 1.8, "2080": 3.0},
@@ -70,6 +76,23 @@ def _point_features(latitude: np.ndarray, longitude: np.ndarray) -> dict[str, np
     }
 
 
+def _elevation(latitude: np.ndarray, longitude: np.ndarray) -> np.ndarray:
+    return (
+        150.0
+        + 1200.0 * np.exp(-((np.asarray(latitude, dtype=float) - 30.0) / 8.0) ** 2)
+        + 250.0 * np.cos((np.asarray(longitude, dtype=float) - 82.0) / 7.0)
+    )
+
+
+def _static_features(latitude: np.ndarray, longitude: np.ndarray) -> xr.Dataset:
+    lat_grid, lon_grid = np.meshgrid(latitude, longitude, indexing="ij")
+    return xr.Dataset(
+        {"elevation_m": (("lat", "lon"), _elevation(lat_grid, lon_grid).astype(np.float32), {"units": "m"})},
+        coords={"lat": latitude, "lon": longitude},
+        attrs=_demo_attrs(dataset_role="synthetic static elevation feature"),
+    )
+
+
 def _make_monthly_dataset(
     base: dict[str, np.ndarray],
     latitude: np.ndarray,
@@ -92,7 +115,11 @@ def _make_monthly_dataset(
             base[FEATURE_NAMES[2]][None, :, :] + temperature_cycle[:, None, None] + temperature_offset
         ).astype(np.float32)),
     }
-    return xr.Dataset(data_vars, coords={"time": times, "lat": latitude, "lon": longitude})
+    dataset = xr.Dataset(data_vars, coords={"time": times, "lat": latitude, "lon": longitude})
+    dataset[FEATURE_NAMES[0]].attrs["units"] = "mm/day"
+    dataset[FEATURE_NAMES[1]].attrs["units"] = "degC"
+    dataset[FEATURE_NAMES[2]].attrs["units"] = "degC"
+    return dataset
 
 
 def _fit_demo_model(training: xr.Dataset) -> dict[str, object]:
@@ -188,6 +215,7 @@ def _create_feature_product(
     longitude: np.ndarray,
     observed: xr.Dataset,
     historical_by_model: dict[str, xr.Dataset],
+    target_grid: xr.Dataset,
     output_dir: Path,
 ) -> xr.Dataset:
     representative_year = "2020" if scenario == "current" else "2030"
@@ -219,9 +247,10 @@ def _create_feature_product(
         period=period,
         representative_monthly_climatology="12 synthetic months; not a CMIP6 time series",
         feature_contract="feature_contract_demo.json",
+        original_climate_resolution="2degree synthetic demo grid",
         bias_correction="synthetic monthly delta correction against fake observed reference",
-        regridding="none; values generated directly on the labeled 1-degree demo target grid",
     ))
+    features = regrid_to_target_grid(features, target_grid)
     output_dir.mkdir(parents=True, exist_ok=True)
     features.to_netcdf(output_dir / f"features_{scenario}_{period}_demo.nc")
     return features
@@ -239,10 +268,13 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
 
     latitude = np.arange(5.5, 38.0, 1.0, dtype=np.float32)
     longitude = np.arange(65.5, 100.0, 1.0, dtype=np.float32)
-    base = _base_features(latitude, longitude)
+    climate_latitude = np.arange(5.0, 40.0, 2.0, dtype=np.float32)
+    climate_longitude = np.arange(65.0, 102.0, 2.0, dtype=np.float32)
+    base = _base_features(climate_latitude, climate_longitude)
     grid_path = output_dir / "target_grid_india_1deg_demo.nc"
     grid = xr.Dataset(coords={"lat": latitude, "lon": longitude}, attrs=_demo_attrs(
         grid_spacing_degrees=1.0,
+        target_resolution="1degree_demo",
         grid_description="1-degree rectangular bounding grid over India; not an India land boundary or mask",
         latitude_bounds="5N to 38N cell centers",
         longitude_bounds="65E to 100E cell centers",
@@ -252,14 +284,14 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
     historical_times = pd.date_range("2000-01-01", periods=24, freq="MS")
     historical_by_model = {
         name: _make_monthly_dataset(
-            base, latitude, longitude, historical_times,
+            base, climate_latitude, climate_longitude, historical_times,
             precipitation_factor=(0.97, 1.0, 1.03)[index],
             temperature_offset=(-0.25, 0.0, 0.25)[index],
         )
         for index, name in enumerate(MODEL_NAMES)
     }
     observed = _make_monthly_dataset(
-        base, latitude, longitude, historical_times,
+        base, climate_latitude, climate_longitude, historical_times,
         precipitation_factor=1.08,
         temperature_offset=0.65,
     )
@@ -275,18 +307,21 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
     sampled_latitude = rng.uniform(latitude.min(), latitude.max(), sample_count)
     sampled_longitude = rng.uniform(longitude.min(), longitude.max(), sample_count)
     sample_base = _point_features(sampled_latitude, sampled_longitude)
+    sample_base["elevation_m"] = _elevation(sampled_latitude, sampled_longitude)
     sample_month = rng.integers(1, 13, sample_count)
     seasonal = np.sin(2.0 * np.pi * (sample_month - 1) / 12.0 - 0.8)
     training_values = {
         FEATURE_NAMES[0]: sample_base[FEATURE_NAMES[0]] * (1.0 + 0.35 * seasonal) * rng.normal(1.02, 0.07, sample_count),
         FEATURE_NAMES[1]: sample_base[FEATURE_NAMES[1]] + 2.5 * seasonal + rng.normal(0.0, 0.5, sample_count),
         FEATURE_NAMES[2]: sample_base[FEATURE_NAMES[2]] + 2.5 * seasonal + rng.normal(0.0, 0.5, sample_count),
+        FEATURE_NAMES[3]: sample_base[FEATURE_NAMES[3]],
     }
     synthetic_label = (
         2.8
         + 0.018 * training_values[FEATURE_NAMES[0]]
         - 0.045 * training_values[FEATURE_NAMES[1]]
         + 0.028 * training_values[FEATURE_NAMES[2]]
+        + 0.00008 * training_values[FEATURE_NAMES[3]]
         + rng.normal(0.0, 0.12, sample_count)
     )
     training = xr.Dataset(
@@ -310,7 +345,7 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
             {
                 "name": "precipitation_mm_day",
                 "cmip6_variable_id": "pr",
-                "units": "mm day-1",
+                "units": "mm/day",
                 "preprocessing": "synthetic monthly precipitation; bias-adjusted by multiplicative monthly delta",
             },
             {
@@ -325,6 +360,11 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
                 "units": "degC",
                 "preprocessing": "synthetic monthly maximum temperature; bias-adjusted by additive monthly delta",
             },
+            {
+                "name": "elevation_m",
+                "units": "m",
+                "preprocessing": "synthetic static elevation surface; demo only",
+            },
         ],
         "target_name": "synthetic_salinity_label",
         "target_units": "unitless synthetic demo index",
@@ -336,17 +376,28 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
     contract_path = output_dir / "feature_contract_demo.json"
     contract_path.write_text(json.dumps(contract, indent=2), encoding="utf-8")
 
-    feature_products: dict[tuple[str, str], xr.Dataset] = {}
-    feature_products[("current", "current")] = _create_feature_product(
-        "current", "current", 0.0, base, latitude, longitude,
-        observed, historical_by_model, feature_dir,
+    static_features = _static_features(latitude, longitude)
+    climate_products: dict[tuple[str, str], xr.Dataset] = {}
+    climate_products[("current", "current")] = _create_feature_product(
+        "current", "current", 0.0, base, climate_latitude, climate_longitude,
+        observed, historical_by_model, grid, feature_dir,
     )
     for scenario, periods in SCENARIO_WARMING.items():
         for period, warming in periods.items():
-            feature_products[(scenario, period)] = _create_feature_product(
-                scenario, period, warming, base, latitude, longitude,
-                observed, historical_by_model, feature_dir,
+            climate_products[(scenario, period)] = _create_feature_product(
+                scenario, period, warming, base, climate_latitude, climate_longitude,
+                observed, historical_by_model, grid, feature_dir,
             )
+
+    feature_products: dict[tuple[str, str], xr.Dataset] = {}
+    for key, climate_features in climate_products.items():
+        assembled_features = assemble_model_features(
+            climate_features, static_features, contract_path
+        )
+        assembled_features.to_netcdf(
+            feature_dir / f"model_features_{key[0]}_{key[1]}_demo.nc"
+        )
+        feature_products[key] = assembled_features
 
     applicability_by_product = {}
     for key, features in feature_products.items():
@@ -390,6 +441,10 @@ def generate_demo(output_dir: Path) -> dict[str, Path]:
             scenario=scenario,
             period=period,
             grid_spacing_degrees=1.0,
+            original_climate_resolution="2degree synthetic demo grid",
+            target_resolution="1degree_demo",
+            regridding_method="bilinear via xarray.interp",
+            member_strategy="all three synthetic demo climate models",
             target_name="synthetic_salinity_label",
             target_units="unitless synthetic demo index",
             feature_contract="feature_contract_demo.json",

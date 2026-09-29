@@ -187,16 +187,14 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/v1/products")
-def get_products() -> dict[str, dict[str, Any]]:
-    products: dict[str, dict[str, Any]] = {}
-    for scenario, period in [("current", "current"), ("ssp245", "2030"), ("ssp245", "2050"), ("ssp245", "2080"), ("ssp585", "2030"), ("ssp585", "2050"), ("ssp585", "2080")]:
-        key = "current" if (scenario == "current" and period == "current") else f"{scenario}_{period}"
-        path = _product_path(scenario, period)
-        products[key] = {
-            "scenario": scenario,
-            "period": period,
-            "available": path.is_file(),
-            "path": str(path),
+def get_products() -> dict[str, Any]:
+    products: dict[str, Any] = {
+        "current": _product_path("current", "current").is_file(),
+    }
+    for scenario in ("ssp245", "ssp585"):
+        products[scenario] = {
+            period: _product_path(scenario, period).is_file()
+            for period in ("2030", "2050", "2080")
         }
     return {"products": products}
 

@@ -5,22 +5,11 @@ from typing import Final
 import xarray as xr
 
 
-PRECIPITATION_UNITS: Final[set[str]] = {
-    "kg m-2 s-1",
-    "kg m^-2 s^-1",
-    "kg/m2/s",
-    "kg m-2 s^-1",
-    "mm day-1",
-    "mm/day",
-    "mm d-1",
-}
-TEMPERATURE_UNITS: Final[set[str]] = {
-    "k",
-    "kelvin",
-    "degc",
-    "c",
-    "celsius",
-    "°c",
+CANONICAL_UNITS: Final[dict[str, str]] = {
+    "pr": "mm/day",
+    "tas": "degC",
+    "tasmin": "degC",
+    "tasmax": "degC",
 }
 
 
@@ -41,42 +30,34 @@ def validate_and_convert_units(
     *,
     target_units: str | None = None,
 ) -> xr.DataArray:
-    """Validate a variable's units and convert compatible values to a common unit."""
+    """Validate units and emit precipitation in mm/day and temperature in degC."""
     units = _normalize_units(values.attrs.get("units"))
     if variable_id == "pr":
-        if units in {"kgm-2s-1", "kgm-2s^-1", "kgm2s"}:
-            canonical = values.copy()
+        if units in {"kgm-2s-1", "kg/m2/s"}:
+            canonical = values * 86400.0
         elif units in {"mmday-1", "mm/day", "mmd-1"}:
-            canonical = values / 86400.0
-            canonical.attrs = values.attrs.copy()
-            canonical.attrs["units"] = "kg m-2 s-1"
-            return canonical
+            canonical = values.copy()
         else:
             raise ValueError(
                 f"Unsupported units for {variable_id!r}: {values.attrs.get('units')!r}. "
                 "Expected one of: kg m-2 s-1, mm day-1."
             )
-        canonical = values.copy()
         canonical.attrs = values.attrs.copy()
-        canonical.attrs["units"] = "kg m-2 s-1"
+        canonical.attrs["units"] = CANONICAL_UNITS[variable_id]
         return canonical
 
-    if variable_id in {"tas", "tasmax"}:
+    if variable_id in {"tas", "tasmin", "tasmax"}:
         if units in {"k", "kelvin"}:
-            canonical = values.copy()
+            canonical = values - 273.15
         elif units in {"degc", "c", "celsius"}:
-            canonical = values + 273.15
-            canonical.attrs = values.attrs.copy()
-            canonical.attrs["units"] = "K"
-            return canonical
+            canonical = values.copy()
         else:
             raise ValueError(
                 f"Unsupported units for {variable_id!r}: {values.attrs.get('units')!r}. "
                 "Expected one of: K, degC."
             )
-        canonical = values.copy()
         canonical.attrs = values.attrs.copy()
-        canonical.attrs["units"] = "K"
+        canonical.attrs["units"] = CANONICAL_UNITS[variable_id]
         return canonical
 
     if target_units is not None:
