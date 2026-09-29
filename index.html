@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salinity Project</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+        }
+
+        #map {
+            height: 100vh;
+            width: 100vw;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        var map = L.map('map').setView([0, 0], 2);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        map.on('click', function (e) {
+            var lat = e.latlng.lat;
+            var lon = e.latlng.lng;
+
+            var popup = L.popup()
+                .setLatLng(e.latlng)
+                .setContent("Fetching data...")
+                .openOn(map);
+
+            var url = `http://127.0.0.1:8000/api/v1/salinity?lat=${lat}&lon=${lon}&_t=${Date.now()}`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    popup.setContent(`
+            <b>Coordinates:</b> ${lat.toFixed(3)}, ${lon.toFixed(3)}<br>
+            <b>Mean Salinity:</b> ${data.mean_salinity}<br>
+            <b>Uncertainty (SD):</b> ${data.uncertainty_sd}
+        `);
+                })
+                .catch(err => {
+                    popup.setContent("Error: " + err.message);
+                    console.error(err);
+                });
+                
+        });
+    </script>
+</body>
+
+</html>
