@@ -42,15 +42,31 @@
                 .setContent("Fetching data...")
                 .openOn(map);
 
-            var url = `http://127.0.0.1:8000/api/v1/salinity?lat=${lat}&lon=${lon}&_t=${Date.now()}`;
+            var url = `http://127.0.0.1:8000/predictions/location?latitude=${lat}&longitude=${lon}&_t=${Date.now()}`;
 
             fetch(url)
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`API request failed (${response.status})`);
+                    }
+                    return response.json();
+                })
                 .then(data => {
+                    var salinity = data.salinityEcUsCm == null
+                        ? "Unavailable"
+                        : `${data.salinityEcUsCm} µS/cm`;
+                    var groundwaterLevel = data.levelM == null
+                        ? "Unavailable"
+                        : `${data.levelM} m`;
+                    var uncertainty = data.uncertainty == null
+                        ? "Unavailable"
+                        : `${data.uncertainty.value} ${data.uncertainty.unit}`;
                     popup.setContent(`
             <b>Coordinates:</b> ${lat.toFixed(3)}, ${lon.toFixed(3)}<br>
-            <b>Mean Salinity:</b> ${data.mean_salinity}<br>
-            <b>Uncertainty (SD):</b> ${data.uncertainty_sd}
+            <b>Status:</b> ${data.status}<br>
+            <b>Groundwater Level:</b> ${groundwaterLevel}<br>
+            <b>Salinity:</b> ${salinity}<br>
+            <b>Uncertainty:</b> ${uncertainty}
         `);
                 })
                 .catch(err => {

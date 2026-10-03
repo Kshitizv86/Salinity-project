@@ -3,7 +3,7 @@ import xarray as xr
 
 from Backend.src.projection.applicability import assess_applicability
 from Backend.src.projection.bias_correction import monthly_delta_correction
-from Backend.src.projection.validation import validate_and_convert_units
+from Backend.src.projection.validation import calculate_historical_reconstruction_metrics, validate_and_convert_units
 
 
 def test_assess_applicability_outputs_feature_diagnostics_and_probability_bounds():
@@ -83,3 +83,34 @@ def test_climate_units_convert_to_project_canonical_schema():
     assert precipitation.attrs["units"] == "mm/day"
     assert np.allclose(temperature.values, [0.0])
     assert temperature.attrs["units"] == "degC"
+
+
+def test_historical_reconstruction_metrics_return_expected_climate_scores():
+    observed = xr.Dataset(
+        {
+            "precipitation_mm_day": (("time",), np.array([10.0, 12.0, 14.0, 16.0], dtype=float)),
+            "mean_temperature_c": (("time",), np.array([10.0, 11.0, 12.0, 13.0], dtype=float)),
+            "maximum_temperature_c": (("time",), np.array([15.0, 16.0, 17.0, 18.0], dtype=float)),
+        },
+        coords={"time": np.arange(4)},
+    )
+    reconstructed = xr.Dataset(
+        {
+            "precipitation_mm_day": (("time",), np.array([11.0, 11.5, 13.5, 16.5], dtype=float)),
+            "mean_temperature_c": (("time",), np.array([9.5, 11.5, 11.8, 13.0], dtype=float)),
+            "maximum_temperature_c": (("time",), np.array([15.5, 15.7, 17.6, 17.7], dtype=float)),
+        },
+        coords={"time": np.arange(4)},
+    )
+
+    metrics = calculate_historical_reconstruction_metrics(
+        observed,
+        reconstructed,
+        variables=["precipitation_mm_day", "mean_temperature_c", "maximum_temperature_c"],
+    )
+
+    assert set(metrics) == {"precipitation_mm_day", "mean_temperature_c", "maximum_temperature_c"}
+    assert metrics["precipitation_mm_day"]["mae"] >= 0.0
+    assert metrics["mean_temperature_c"]["rmse"] >= 0.0
+    assert metrics["maximum_temperature_c"]["correlation"] >= -1.0
+    assert metrics["maximum_temperature_c"]["correlation"] <= 1.0

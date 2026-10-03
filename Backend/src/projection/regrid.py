@@ -2,7 +2,11 @@ import argparse
 import json
 from pathlib import Path
 
-import gcsfs
+try:
+    import gcsfs
+except ModuleNotFoundError:  # pragma: no cover - optional in local demo/test environments
+    gcsfs = None
+
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -60,7 +64,7 @@ def regrid_to_target_grid(
         ),
         "target_resolution": target_grid.attrs.get("target_resolution", "unspecified"),
         "regridding_method": "bilinear",
-        "india_land_mask_applied": "india_mask" in target_grid,
+        "india_land_mask_applied": str("india_mask" in target_grid).lower(),
     })
     return regridded
 
@@ -122,6 +126,11 @@ def build_future_features(
             observed_reference = reference.load()
         if "time" not in observed_reference.coords:
             raise ValueError("Observed reference must contain monthly time-series feature data")
+    if gcsfs is None:
+        raise ModuleNotFoundError(
+            "gcsfs is required to read CMIP6 catalog and zarr stores. "
+            "Install Backend/requirements-geospatial.txt or the backend geospatial extras."
+        )
     fs = gcsfs.GCSFileSystem(token="anon")
     outputs = []
 
